@@ -1,0 +1,208 @@
+@page "/attivita"
+@inject CalendarioService Svc
+@inject IJSRuntime JS
+
+<PageTitle>Attività</PageTitle>
+
+<div class="pagina-stretta">
+    <div class="titolo-pagina">
+        <h1>Attività</h1>
+        @if (bozza is null)
+        {
+            <button class="btn btn-primario" @onclick="Nuova">+ Nuova attività</button>
+        }
+    </div>
+
+    @if (bozza is not null)
+    {
+        <div class="card form-attivita">
+            <h2>@(bozza.Id == 0 ? "Nuova attività" : "Modifica attività")</h2>
+            <EditForm Model="bozza" OnValidSubmit="Salva">
+                <DataAnnotationsValidator />
+
+                <div class="form-riga">
+                    <div class="anteprima" style="--colore:@bozza.Colore">
+                        @if (anteprima is not null)
+                        {
+                            <img src="@anteprima" alt="" />
+                        }
+                        else
+                        {
+                            <span class="anteprima-vuota">🖼️</span>
+                        }
+                    </div>
+                    <div class="form-campi">
+                        <label class="campo">
+                            <span>Nome</span>
+                            <InputText @bind-Value="bozza.Nome" class="input" placeholder="Es. Palestra" />
+                            <ValidationMessage For="() => bozza.Nome" />
+                        </label>
+                        <label class="campo campo-colore">
+                            <span>Colore</span>
+                            <input type="color" @bind="bozza.Colore" class="input-colore" />
+                        </label>
+                    </div>
+                </div>
+
+                <div class="campo">
+                    <span>Immagine</span>
+                    <label class="btn btn-secondario file-btn">
+                        📷 Scegli immagine
+                        <InputFile OnChange="CaricaImmagine" accept="image/*" />
+                    </label>
+                    @if (anteprima is not null)
+                    {
+                        <button type="button" class="btn btn-link" @onclick="RimuoviImmagine">Rimuovi immagine</button>
+                    }
+                    @if (caricamento)
+                    {
+                        <span class="nota">Elaborazione immagine…</span>
+                    }
+                    @if (errore is not null)
+                    {
+                        <div class="errore">@errore</div>
+                    }
+                </div>
+
+                <div class="azioni">
+                    <button type="submit" class="btn btn-primario" disabled="@caricamento">Salva</button>
+                    <button type="button" class="btn btn-secondario" @onclick="Annulla">Annulla</button>
+                </div>
+            </EditForm>
+        </div>
+    }
+
+    @if (elenco is null)
+    {
+        <p class="nota">Caricamento…</p>
+    }
+    else if (elenco.Count == 0)
+    {
+        <div class="vuoto">Nessuna attività ancora. Creane una con <b>+ Nuova attività</b>.</div>
+    }
+    else
+    {
+        <ul class="lista-attivita">
+            @foreach (var a in elenco)
+            {
+                <li class="card riga-attivita" style="--colore:@a.Colore">
+                    <div class="miniatura">
+                        @if (a.UrlImmagine is not null)
+                        {
+                            <img src="@a.UrlImmagine" alt="" loading="lazy" />
+                        }
+                    </div>
+                    <span class="nome">@a.Nome</span>
+                    <button class="btn btn-icona" title="Modifica" @onclick="() => Modifica(a)">✏️</button>
+                    <button class="btn btn-icona" title="Elimina" @onclick="() => Elimina(a)">🗑️</button>
+                </li>
+            }
+        </ul>
+    }
+</div>
+
+@code {
+    private List<Attivita>? elenco;
+    private Attivita? bozza;
+    private string? anteprima;
+    private byte[]? nuovaImmagine;
+    private string? nuovoContentType;
+    private bool rimuovi;
+    private bool caricamento;
+    private string? errore;
+
+    private const int LatoMax = 800;
+    private const long DimensioneMax = 15 * 1024 * 1024;
+
+    protected override async Task OnInitializedAsync() => elenco = await Svc.GetAttivitaAsync();
+
+    private void Nuova() => Apri(new Attivita());
+
+    private void Modifica(Attivita a) => Apri(new Attivita
+    {
+        Id = a.Id,
+        Nome = a.Nome,
+        Colore = a.Colore,
+        VersioneImmagine = a.VersioneImmagine,
+        HaImmagine = a.HaImmagine
+    });
+
+    private void Apri(Attivita a)
+    {
+        bozza = a;
+        anteprima = a.UrlImmagine;
+        nuovaImmagine = null;
+        nuovoContentType = null;
+        rimuovi = false;
+        errore = null;
+    }
+
+    private void Annulla() => bozza = null;
+
+    private async Task CaricaImmagine(InputFileChangeEventArgs e)
+    {
+        errore = null;
+        var file = e.File;
+        if (!file.ContentType.StartsWith("image/"))
+        {
+            errore = "Il file selezionato non è un'immagine.";
+            return;
+        }
+
+        caricamento = true;
+        try
+        {
+            // PNG/WebP mantengono la trasparenza, il resto diventa JPEG.
+            // Il ridimensionamento avviene nel browser: anche le foto grandi del telefono vanno bene.
+            var formato = file.ContentType switch
+            {
+                "image/png" or "image/gif" or "image/svg+xml" => "image/png",
+                "image/webp" => "image/webp",
+                _ => "image/jpeg"
+            };
+            var ridotta = await file.RequestImageFileAsync(formato, LatoMax, LatoMax);
+            await using var stream = ridotta.OpenReadStream(DimensioneMax);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+
+            nuovaImmagine = ms.ToArray();
+            nuovoContentType = formato;
+            rimuovi = false;
+            anteprima = $"data:{formato};base64,{Convert.ToBase64String(nuovaImmagine)}";
+        }
+        catch (Exception ex)
+        {
+            errore = "Impossibile leggere l'immagine: " + ex.Message;
+        }
+        finally
+        {
+            caricamento = false;
+        }
+    }
+
+    private void RimuoviImmagine()
+    {
+        anteprima = null;
+        nuovaImmagine = null;
+        nuovoContentType = null;
+        rimuovi = true;
+    }
+
+    private async Task Salva()
+    {
+        if (bozza is null) return;
+        await Svc.SalvaAttivitaAsync(bozza, nuovaImmagine, nuovoContentType, rimuovi);
+        bozza = null;
+        elenco = await Svc.GetAttivitaAsync();
+    }
+
+    private async Task Elimina(Attivita a)
+    {
+        var ok = await JS.InvokeAsync<bool>("confirm",
+            $"Eliminare l'attività \"{a.Nome}\"? Verrà tolta anche dal calendario.");
+        if (!ok) return;
+        await Svc.EliminaAttivitaAsync(a.Id);
+        if (bozza?.Id == a.Id) bozza = null;
+        elenco = await Svc.GetAttivitaAsync();
+    }
+}

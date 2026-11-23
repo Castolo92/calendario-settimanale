@@ -1,0 +1,149 @@
+@page "/"
+@implements IDisposable
+@inject CalendarioService Svc
+
+<PageTitle>Calendario</PageTitle>
+
+<div class="calendario">
+    <div class="nav-settimana">
+        <button class="btn btn-icona" @onclick="() => CambiaSettimana(-7)" aria-label="Settimana precedente">‹</button>
+        <h1>@Formati.Settimana(inizio)</h1>
+        <span class="spazio"></span>
+        <button class="btn btn-icona" @onclick="() => CambiaSettimana(7)" aria-label="Settimana successiva">›</button>
+        @if (inizio != CalendarioService.InizioSettimana(CalendarioService.Oggi))
+        {
+            <button class="btn btn-secondario" @onclick="TornaAOggi">Oggi</button>
+        }
+    </div>
+
+    <div class="cal-griglia">
+        <div class="cal-colonna cal-etichette" aria-hidden="true">
+            <div class="cal-testa"></div>
+            @foreach (var p in PeriodoInfo.Tutti)
+            {
+                <div class="cal-etichetta periodo-@((int)p)">
+                    <span class="icona">@PeriodoInfo.Icona(p)</span>
+                    <span class="nome-periodo">@p</span>
+                </div>
+            }
+        </div>
+
+        @for (int i = 0; i < 7; i++)
+        {
+            var g = inizio.AddDays(i);
+            var oggi = g == CalendarioService.Oggi;
+            <div class="cal-colonna giorno-@i @(oggi ? "oggi" : "")">
+                <div class="cal-testa">
+                    @if (oggi)
+                    {
+                        <span class="badge-oggi">⭐ Oggi</span>
+                    }
+                    <span class="cal-giorno">@g.ToString("dddd")</span>
+                    <span class="cal-numero">@g.Day</span>
+                </div>
+                @foreach (var p in PeriodoInfo.Tutti)
+                {
+                    var a = mappa.TryGetValue((g, p), out var id) && attivita.TryGetValue(id, out var trovata) ? trovata : null;
+                    var adesso = g == attualeGiorno && p == attualePeriodo;
+                    var fatto = g < attualeGiorno || (g == attualeGiorno && p < attualePeriodo);
+                    <div class="cal-cella periodo-@((int)p) @(a is null ? "vuota" : "") @(adesso ? "adesso" : "") @(fatto ? "fatto" : "")"
+                         style="@(a is null ? null : $"--colore:{a.Colore}")">
+                        <span class="cal-cella-periodo">@PeriodoInfo.Icona(p)</span>
+                        @if (adesso)
+                        {
+                            <span class="badge-adesso">Adesso!</span>
+                        }
+                        @if (a is not null)
+                        {
+                            <span class="cal-figura">
+                                @if (a.UrlImmagine is not null)
+                                {
+                                    <img src="@a.UrlImmagine" alt="" />
+                                }
+                                else
+                                {
+                                    <span class="cal-iniziale">@a.Nome[..1]</span>
+                                }
+                            </span>
+                            <span class="cal-nome">@a.Nome</span>
+                            @if (fatto)
+                            {
+                                <span class="sticker-fatto" title="Fatto">✔</span>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private DateOnly inizio = CalendarioService.InizioSettimana(CalendarioService.Oggi);
+    private Dictionary<(DateOnly, Periodo), int> mappa = [];
+    private Dictionary<int, Attivita> attivita = [];
+    private DateOnly attualeGiorno;
+    private Periodo attualePeriodo;
+    private Timer? timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        AggiornaAdesso();
+        await Carica();
+        Svc.DatiCambiati += SuDatiCambiati;
+        // Ogni minuto aggiorna il periodo evidenziato (utile se resta acceso su uno schermo)
+        timer = new Timer(_ => InvokeAsync(SuTimer), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    private void AggiornaAdesso()
+    {
+        var ora = DateTime.Now;
+        // Fino alle 6 del mattino siamo ancora nella "notte" del giorno precedente
+        attualeGiorno = DateOnly.FromDateTime(ora.Hour < 6 ? ora.AddDays(-1) : ora);
+        attualePeriodo = PeriodoInfo.DaOra(ora.Hour);
+    }
+
+    private async Task Carica()
+    {
+        attivita = (await Svc.GetAttivitaAsync()).ToDictionary(a => a.Id);
+        mappa = await Svc.GetSettimanaAsync(inizio);
+    }
+
+    private async Task CambiaSettimana(int giorni)
+    {
+        inizio = inizio.AddDays(giorni);
+        mappa = await Svc.GetSettimanaAsync(inizio);
+    }
+
+    private async Task TornaAOggi()
+    {
+        inizio = CalendarioService.InizioSettimana(CalendarioService.Oggi);
+        mappa = await Svc.GetSettimanaAsync(inizio);
+    }
+
+    private async Task SuTimer()
+    {
+        var settimanaPrima = CalendarioService.InizioSettimana(attualeGiorno);
+        AggiornaAdesso();
+        // Se si stava guardando la settimana corrente e questa è cambiata, si passa alla nuova
+        var settimanaOra = CalendarioService.InizioSettimana(CalendarioService.Oggi);
+        if (inizio == settimanaPrima && settimanaOra != inizio)
+        {
+            inizio = settimanaOra;
+            mappa = await Svc.GetSettimanaAsync(inizio);
+        }
+        StateHasChanged();
+    }
+
+    private void SuDatiCambiati() => _ = InvokeAsync(async () =>
+    {
+        await Carica();
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        Svc.DatiCambiati -= SuDatiCambiati;
+        timer?.Dispose();
+    }
+}

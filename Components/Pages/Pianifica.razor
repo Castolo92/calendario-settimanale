@@ -1,0 +1,136 @@
+@page "/pianifica"
+@inject CalendarioService Svc
+@inject IJSRuntime JS
+
+<PageTitle>Pianifica</PageTitle>
+
+<div class="pagina-stretta">
+    <div class="nav-settimana compatta">
+        <button class="btn btn-icona" @onclick="() => CambiaSettimana(-7)" aria-label="Settimana precedente">‹</button>
+        <div class="etichetta-settimana">@Formati.Settimana(inizio)</div>
+        <button class="btn btn-icona" @onclick="() => CambiaSettimana(7)" aria-label="Settimana successiva">›</button>
+    </div>
+
+    <div class="giorni-chip">
+        @for (int i = 0; i < 7; i++)
+        {
+            var g = inizio.AddDays(i);
+            var pieni = PeriodoInfo.Tutti.Count(p => mappa.ContainsKey((g, p)));
+            <button class="chip giorno-@i @(g == giorno ? "attivo" : "") @(g == CalendarioService.Oggi ? "oggi" : "")"
+                    @onclick="() => giorno = g">
+                <span class="chip-giorno">@g.ToString("ddd")</span>
+                <span class="chip-numero">@g.Day</span>
+                <span class="chip-punti">
+                    @for (int k = 0; k < 4; k++)
+                    {
+                        <i class="@(k < pieni ? "pieno" : "")"></i>
+                    }
+                </span>
+            </button>
+        }
+    </div>
+
+    <h1 class="giorno-titolo giorno-@(giorno.DayNumber - inizio.DayNumber)">@giorno.ToString("dddd d MMMM")</h1>
+
+    @if (attivita is null)
+    {
+        <p class="nota">Caricamento…</p>
+    }
+    else if (attivita.Count == 0)
+    {
+        <div class="vuoto">
+            Non ci sono ancora attività. <a href="attivita">Creale nella pagina Attività</a> e poi torna qui.
+        </div>
+    }
+    else
+    {
+        @foreach (var periodo in PeriodoInfo.Tutti)
+        {
+            var scelta = mappa.TryGetValue((giorno, periodo), out var id) ? id : (int?)null;
+            <section class="card slot periodo-@((int)periodo)">
+                <h2>@PeriodoInfo.Icona(periodo) @periodo</h2>
+                <div class="scelte">
+                    <button class="scelta nessuna @(scelta is null ? "selezionata" : "")"
+                            @onclick="() => Imposta(periodo, null)">
+                        <span class="scelta-img">✕</span>
+                        <span class="scelta-nome">Nessuna</span>
+                    </button>
+                    @foreach (var a in attivita)
+                    {
+                        <button class="scelta @(scelta == a.Id ? "selezionata" : "")" style="--colore:@a.Colore"
+                                @onclick="() => Imposta(periodo, a.Id)">
+                            <span class="scelta-img">
+                                @if (a.UrlImmagine is not null)
+                                {
+                                    <img src="@a.UrlImmagine" alt="" loading="lazy" />
+                                }
+                                else
+                                {
+                                    @a.Nome[..1]
+                                }
+                            </span>
+                            <span class="scelta-nome">@a.Nome</span>
+                        </button>
+                    }
+                </div>
+            </section>
+        }
+
+        <div class="azioni azioni-fondo">
+            <button class="btn btn-secondario" @onclick="CopiaPrecedente">⧉ Copia settimana precedente</button>
+        </div>
+    }
+</div>
+
+@if (messaggio is not null)
+{
+    <div class="toast" @key="messaggioId">@messaggio</div>
+}
+
+@code {
+    private DateOnly inizio = CalendarioService.InizioSettimana(CalendarioService.Oggi);
+    private DateOnly giorno = CalendarioService.Oggi;
+    private Dictionary<(DateOnly, Periodo), int> mappa = [];
+    private List<Attivita>? attivita;
+    private string? messaggio;
+    private int messaggioId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        attivita = await Svc.GetAttivitaAsync();
+        mappa = await Svc.GetSettimanaAsync(inizio);
+    }
+
+    private async Task CambiaSettimana(int giorni)
+    {
+        inizio = inizio.AddDays(giorni);
+        giorno = giorno.AddDays(giorni);
+        mappa = await Svc.GetSettimanaAsync(inizio);
+    }
+
+    private async Task Imposta(Periodo periodo, int? attivitaId)
+    {
+        await Svc.ImpostaAsync(giorno, periodo, attivitaId);
+        if (attivitaId is null) mappa.Remove((giorno, periodo));
+        else mappa[(giorno, periodo)] = attivitaId.Value;
+        await MostraMessaggio("Salvato ✓");
+    }
+
+    private async Task CopiaPrecedente()
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", "Copiare la settimana precedente su questa? Le attività già inserite verranno sostituite."))
+            return;
+        await Svc.CopiaSettimanaPrecedenteAsync(inizio);
+        mappa = await Svc.GetSettimanaAsync(inizio);
+        await MostraMessaggio("Settimana copiata ✓");
+    }
+
+    private async Task MostraMessaggio(string testo)
+    {
+        messaggio = testo;
+        var id = ++messaggioId;
+        StateHasChanged();
+        await Task.Delay(1500);
+        if (id == messaggioId) messaggio = null;
+    }
+}
