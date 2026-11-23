@@ -1,0 +1,52 @@
+@inject Sessione Sessione
+
+<div class="accesso">
+    <div class="card">
+        <div class="accesso-icona">🔑</div>
+        <h1>Ciao!</h1>
+        <p class="nota">Accedi una volta su questo dispositivo: resterai collegato.</p>
+
+        <form @onsubmit="Accedi" class="accesso-form">
+            <label class="campo">
+                <span>Email</span>
+                <input class="input" type="email" autocomplete="username" @bind="email" required />
+            </label>
+            <label class="campo">
+                <span>Password</span>
+                <input class="input" type="password" autocomplete="current-password" @bind="password" required />
+            </label>
+            @if (errore is not null)
+            {
+                <div class="errore">@errore</div>
+            }
+            <button type="submit" class="btn btn-primario" disabled="@inCorso">
+                @(inCorso ? "Accesso…" : "Entra")
+            </button>
+        </form>
+    </div>
+</div>
+
+@code {
+    private string email = "";
+    private string password = "";
+    private string? errore;
+    private bool inCorso;
+
+    private async Task Accedi()
+    {
+        errore = null;
+        inCorso = true;
+        try
+        {
+            errore = await Sessione.AccediAsync(email, password);
+        }
+        catch (HttpRequestException)
+        {
+            errore = "Connessione non riuscita. Controlla internet e riprova.";
+        }
+        finally
+        {
+            inCorso = false;
+        }
+    }
+}

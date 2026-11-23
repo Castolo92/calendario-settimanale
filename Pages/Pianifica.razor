@@ -46,7 +46,7 @@
     {
         @foreach (var periodo in PeriodoInfo.Tutti)
         {
-            var scelta = mappa.TryGetValue((giorno, periodo), out var id) ? id : (int?)null;
+            var scelta = mappa.TryGetValue((giorno, periodo), out var id) ? id : (long?)null;
             <section class="card slot periodo-@((int)periodo)">
                 <h2>@PeriodoInfo.Icona(periodo) @periodo</h2>
                 <div class="scelte">
@@ -84,53 +84,96 @@
 
 @if (messaggio is not null)
 {
-    <div class="toast" @key="messaggioId">@messaggio</div>
+    <div class="toast @(messaggioErrore ? "toast-errore" : "")" @key="messaggioId">@messaggio</div>
 }
 
 @code {
     private DateOnly inizio = CalendarioService.InizioSettimana(CalendarioService.Oggi);
     private DateOnly giorno = CalendarioService.Oggi;
-    private Dictionary<(DateOnly, Periodo), int> mappa = [];
+    private Dictionary<(DateOnly, Periodo), long> mappa = [];
     private List<Attivita>? attivita;
     private string? messaggio;
+    private bool messaggioErrore;
     private int messaggioId;
 
     protected override async Task OnInitializedAsync()
     {
-        attivita = await Svc.GetAttivitaAsync();
-        mappa = await Svc.GetSettimanaAsync(inizio);
+        try
+        {
+            attivita = await Svc.GetAttivitaAsync();
+            mappa = await Svc.GetSettimanaAsync(inizio);
+        }
+        catch (ErroreSupabase ex)
+        {
+            attivita = [];
+            await MostraMessaggio(ex.Message, true);
+        }
     }
 
     private async Task CambiaSettimana(int giorni)
     {
         inizio = inizio.AddDays(giorni);
         giorno = giorno.AddDays(giorni);
-        mappa = await Svc.GetSettimanaAsync(inizio);
+        try
+        {
+            mappa = await Svc.GetSettimanaAsync(inizio);
+        }
+        catch (ErroreSupabase ex)
+        {
+            mappa = [];
+            await MostraMessaggio(ex.Message, true);
+        }
     }
 
-    private async Task Imposta(Periodo periodo, int? attivitaId)
+    private async Task Imposta(Periodo periodo, long? attivitaId)
     {
-        await Svc.ImpostaAsync(giorno, periodo, attivitaId);
-        if (attivitaId is null) mappa.Remove((giorno, periodo));
-        else mappa[(giorno, periodo)] = attivitaId.Value;
-        await MostraMessaggio("Salvato ✓");
+        var chiave = (giorno, periodo);
+        var precedente = mappa.TryGetValue(chiave, out var v) ? v : (long?)null;
+        if (precedente == attivitaId) return;
+
+        // Aggiorna subito lo schermo, poi salva; se il salvataggio fallisce torna com'era
+        Applica(chiave, attivitaId);
+        try
+        {
+            await Svc.ImpostaAsync(giorno, periodo, attivitaId);
+            await MostraMessaggio("Salvato ✓");
+        }
+        catch (ErroreSupabase ex)
+        {
+            Applica(chiave, precedente);
+            await MostraMessaggio(ex.Message, true);
+        }
+    }
+
+    private void Applica((DateOnly, Periodo) chiave, long? attivitaId)
+    {
+        if (attivitaId is null) mappa.Remove(chiave);
+        else mappa[chiave] = attivitaId.Value;
     }
 
     private async Task CopiaPrecedente()
     {
         if (!await JS.InvokeAsync<bool>("confirm", "Copiare la settimana precedente su questa? Le attività già inserite verranno sostituite."))
             return;
-        await Svc.CopiaSettimanaPrecedenteAsync(inizio);
-        mappa = await Svc.GetSettimanaAsync(inizio);
-        await MostraMessaggio("Settimana copiata ✓");
+        try
+        {
+            await Svc.CopiaSettimanaPrecedenteAsync(inizio);
+            mappa = await Svc.GetSettimanaAsync(inizio);
+            await MostraMessaggio("Settimana copiata ✓");
+        }
+        catch (ErroreSupabase ex)
+        {
+            await MostraMessaggio(ex.Message, true);
+        }
     }
 
-    private async Task MostraMessaggio(string testo)
+    private async Task MostraMessaggio(string testo, bool errore = false)
     {
         messaggio = testo;
+        messaggioErrore = errore;
         var id = ++messaggioId;
         StateHasChanged();
-        await Task.Delay(1500);
+        await Task.Delay(errore ? 4000 : 1500);
         if (id == messaggioId) messaggio = null;
     }
 }

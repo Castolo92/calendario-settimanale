@@ -1,0 +1,55 @@
+﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject Sessione Sessione
+@inject SupabaseConfig Config
+
+<header class="topbar">
+    <div class="brand">🌈 <span>La mia settimana</span></div>
+    @if (Sessione.Collegato)
+    {
+        <nav class="nav">
+            <NavLink href="" Match="NavLinkMatch.All">🗓️ <span>Calendario</span></NavLink>
+            <NavLink href="pianifica">✏️ <span>Pianifica</span></NavLink>
+            <NavLink href="attivita">⚙️ <span>Attività</span></NavLink>
+        </nav>
+    }
+</header>
+
+<main class="contenuto">
+    @if (!Config.Configurato)
+    {
+        <div class="pagina-stretta">
+            <div class="card messaggio-centrale">
+                <h1>🔧 Manca la configurazione</h1>
+                <p>Inserisci l'indirizzo e la chiave pubblica del progetto Supabase nel file <code>wwwroot/appsettings.json</code>.</p>
+            </div>
+        </div>
+    }
+    else if (!pronto)
+    {
+        <p class="nota centrato">Un attimo…</p>
+    }
+    else if (!Sessione.Collegato)
+    {
+        <Accesso />
+    }
+    else
+    {
+        @Body
+    }
+</main>
+
+@code {
+    private bool pronto;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Sessione.Cambiata += SuCambio;
+        await Sessione.InizializzaAsync();
+        pronto = true;
+    }
+
+    private void SuCambio() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Sessione.Cambiata -= SuCambio;
+}

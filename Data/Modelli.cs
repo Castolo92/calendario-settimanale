@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace CalendarioSettimanale.Data;
 
@@ -33,9 +34,14 @@ public static class PeriodoInfo
     };
 }
 
+/// <summary>Riga della tabella "attivita" su Supabase.</summary>
 public class Attivita
 {
-    public int Id { get; set; }
+    /// <summary>Indirizzo pubblico del bucket delle immagini, impostato all'avvio.</summary>
+    public static string BaseUrlImmagini { get; set; } = "";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long Id { get; set; }
 
     [Required(ErrorMessage = "Il nome è obbligatorio")]
     [MaxLength(80)]
@@ -44,28 +50,19 @@ public class Attivita
     [MaxLength(9)]
     public string Colore { get; set; } = "#4f7cff";
 
-    public byte[]? Immagine { get; set; }
+    /// <summary>Nome del file nel bucket "immagini" (es. "3f2a….jpg"), null se senza immagine.</summary>
+    public string? Immagine { get; set; }
 
-    [MaxLength(50)]
-    public string? ImmagineContentType { get; set; }
+    [JsonIgnore]
+    public string? UrlImmagine => Immagine is null ? null : $"{BaseUrlImmagini}/{Uri.EscapeDataString(Immagine)}";
 
-    /// <summary>Incrementata a ogni cambio immagine, serve per invalidare la cache del browser.</summary>
-    public int VersioneImmagine { get; set; }
-
-    public List<Pianificazione> Pianificazioni { get; set; } = [];
-
-    /// <summary>Valorizzato nelle query di elenco, dove i byte dell'immagine non vengono caricati.</summary>
-    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
-    public bool HaImmagine { get; set; }
-
-    public string? UrlImmagine => HaImmagine ? $"immagini/{Id}?v={VersioneImmagine}" : null;
+    public Attivita Copia() => (Attivita)MemberwiseClone();
 }
 
+/// <summary>Riga della tabella "pianificazioni" su Supabase.</summary>
 public class Pianificazione
 {
-    public int Id { get; set; }
     public DateOnly Data { get; set; }
     public Periodo Periodo { get; set; }
-    public int AttivitaId { get; set; }
-    public Attivita Attivita { get; set; } = null!;
+    public long AttivitaId { get; set; }
 }

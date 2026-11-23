@@ -1,12 +1,7 @@
-using Microsoft.EntityFrameworkCore;
-
 namespace CalendarioSettimanale.Data;
 
-public class CalendarioService(IDbContextFactory<AppDbContext> dbFactory)
+public class CalendarioService(SupabaseClient db)
 {
-    /// <summary>Notifica i componenti aperti (es. il calendario a muro) quando cambia qualcosa.</summary>
-    public event Action? DatiCambiati;
-
     public static DateOnly InizioSettimana(DateOnly data)
     {
         int diff = ((int)data.DayOfWeek + 6) % 7; // lunedì = 0
@@ -15,128 +10,73 @@ public class CalendarioService(IDbContextFactory<AppDbContext> dbFactory)
 
     public static DateOnly Oggi => DateOnly.FromDateTime(DateTime.Now);
 
+    private static string D(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
     // ---------- Attività ----------
 
-    public async Task<List<Attivita>> GetAttivitaAsync()
-    {
-        await using var db = await dbFactory.CreateDbContextAsync();
-        // Non carichiamo i byte dell'immagine: servono solo per l'URL
-        return await db.Attivita
-            .OrderBy(a => a.Nome)
-            .Select(a => new Attivita
-            {
-                Id = a.Id,
-                Nome = a.Nome,
-                Colore = a.Colore,
-                VersioneImmagine = a.VersioneImmagine,
-                HaImmagine = a.Immagine != null
-            })
-            .AsNoTracking()
-            .ToListAsync();
-    }
+    public Task<List<Attivita>> GetAttivitaAsync() =>
+        db.SelectAsync<Attivita>("attivita?select=id,nome,colore,immagine&order=nome.asc");
 
     public async Task SalvaAttivitaAsync(Attivita input, byte[]? nuovaImmagine, string? contentType, bool rimuoviImmagine)
     {
-        await using var db = await dbFactory.CreateDbContextAsync();
-        Attivita entita;
-        if (input.Id == 0)
-        {
-            entita = new Attivita();
-            db.Attivita.Add(entita);
-        }
-        else
-        {
-            entita = await db.Attivita.FirstAsync(a => a.Id == input.Id);
-        }
+        var vecchiaImmagine = input.Immagine;
+        string? immagine = input.Immagine;
 
-        entita.Nome = input.Nome.Trim();
-        entita.Colore = input.Colore;
-
-        if (nuovaImmagine is not null)
+        if (nuovaImmagine is not null && contentType is not null)
         {
-            entita.Immagine = nuovaImmagine;
-            entita.ImmagineContentType = contentType;
-            entita.VersioneImmagine++;
+            // Nome sempre nuovo: così il browser non mostra mai la versione vecchia dalla cache
+            var estensione = contentType switch { "image/png" => "png", "image/webp" => "webp", _ => "jpg" };
+            immagine = $"{Guid.NewGuid():N}.{estensione}";
+            await db.CaricaFileAsync(immagine, nuovaImmagine, contentType);
         }
         else if (rimuoviImmagine)
         {
-            entita.Immagine = null;
-            entita.ImmagineContentType = null;
-            entita.VersioneImmagine++;
+            immagine = null;
         }
 
-        await db.SaveChangesAsync();
-        DatiCambiati?.Invoke();
+        var valori = new { nome = input.Nome.Trim(), colore = input.Colore, immagine };
+        if (input.Id == 0)
+            await db.InsertAsync("attivita", new Attivita { Nome = valori.nome, Colore = valori.colore, Immagine = immagine });
+        else
+            await db.UpdateAsync($"attivita?id=eq.{input.Id}", valori);
+
+        if (vecchiaImmagine is not null && vecchiaImmagine != immagine)
+            await db.EliminaFileAsync(vecchiaImmagine);
     }
 
-    public async Task EliminaAttivitaAsync(int id)
+    public async Task EliminaAttivitaAsync(Attivita attivita)
     {
-        await using var db = await dbFactory.CreateDbContextAsync();
-        await db.Attivita.Where(a => a.Id == id).ExecuteDeleteAsync();
-        DatiCambiati?.Invoke();
-    }
-
-    public async Task<(byte[] Dati, string ContentType)?> GetImmagineAsync(int id)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync();
-        var r = await db.Attivita
-            .Where(a => a.Id == id && a.Immagine != null)
-            .Select(a => new { a.Immagine, a.ImmagineContentType })
-            .FirstOrDefaultAsync();
-        return r is null ? null : (r.Immagine!, r.ImmagineContentType ?? "image/jpeg");
+        // Le pianificazioni collegate vengono cancellate dal database (on delete cascade)
+        await db.DeleteAsync($"attivita?id=eq.{attivita.Id}");
+        if (attivita.Immagine is not null) await db.EliminaFileAsync(attivita.Immagine);
     }
 
     // ---------- Pianificazione ----------
 
     /// <summary>Restituisce per la settimana indicata la mappa (data, periodo) -> id attività.</summary>
-    public async Task<Dictionary<(DateOnly, Periodo), int>> GetSettimanaAsync(DateOnly inizio)
+    public async Task<Dictionary<(DateOnly, Periodo), long>> GetSettimanaAsync(DateOnly inizio)
     {
-        var fine = inizio.AddDays(7);
-        await using var db = await dbFactory.CreateDbContextAsync();
-        var righe = await db.Pianificazioni
-            .Where(p => p.Data >= inizio && p.Data < fine)
-            .AsNoTracking()
-            .ToListAsync();
+        var righe = await db.SelectAsync<Pianificazione>(
+            $"pianificazioni?select=data,periodo,attivita_id&data=gte.{D(inizio)}&data=lt.{D(inizio.AddDays(7))}");
         return righe.ToDictionary(p => (p.Data, p.Periodo), p => p.AttivitaId);
     }
 
     /// <summary>Imposta (o rimuove, se attivitaId è null) l'attività di un periodo.</summary>
-    public async Task ImpostaAsync(DateOnly data, Periodo periodo, int? attivitaId)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync();
-        var esistente = await db.Pianificazioni.FirstOrDefaultAsync(p => p.Data == data && p.Periodo == periodo);
-
-        if (attivitaId is null)
-        {
-            if (esistente is not null) db.Pianificazioni.Remove(esistente);
-        }
-        else if (esistente is null)
-        {
-            db.Pianificazioni.Add(new Pianificazione { Data = data, Periodo = periodo, AttivitaId = attivitaId.Value });
-        }
-        else
-        {
-            esistente.AttivitaId = attivitaId.Value;
-        }
-
-        await db.SaveChangesAsync();
-        DatiCambiati?.Invoke();
-    }
+    public Task ImpostaAsync(DateOnly data, Periodo periodo, long? attivitaId) =>
+        attivitaId is null
+            ? db.DeleteAsync($"pianificazioni?data=eq.{D(data)}&periodo=eq.{(int)periodo}")
+            : db.UpsertAsync("pianificazioni", "data,periodo",
+                new Pianificazione { Data = data, Periodo = periodo, AttivitaId = attivitaId.Value });
 
     /// <summary>Copia la pianificazione della settimana precedente su quella indicata (sovrascrivendo).</summary>
     public async Task CopiaSettimanaPrecedenteAsync(DateOnly inizio)
     {
-        await using var db = await dbFactory.CreateDbContextAsync();
         var prec = inizio.AddDays(-7);
-        var sorgente = await db.Pianificazioni.Where(p => p.Data >= prec && p.Data < inizio).AsNoTracking().ToListAsync();
-        await db.Pianificazioni.Where(p => p.Data >= inizio && p.Data < inizio.AddDays(7)).ExecuteDeleteAsync();
-        db.Pianificazioni.AddRange(sorgente.Select(p => new Pianificazione
-        {
-            Data = p.Data.AddDays(7),
-            Periodo = p.Periodo,
-            AttivitaId = p.AttivitaId
-        }));
-        await db.SaveChangesAsync();
-        DatiCambiati?.Invoke();
+        var sorgente = await db.SelectAsync<Pianificazione>(
+            $"pianificazioni?select=data,periodo,attivita_id&data=gte.{D(prec)}&data=lt.{D(inizio)}");
+        await db.DeleteAsync($"pianificazioni?data=gte.{D(inizio)}&data=lt.{D(inizio.AddDays(7))}");
+        await db.InsertManyAsync("pianificazioni", sorgente
+            .Select(p => new Pianificazione { Data = p.Data.AddDays(7), Periodo = p.Periodo, AttivitaId = p.AttivitaId })
+            .ToList());
     }
 }

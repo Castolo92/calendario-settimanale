@@ -1,6 +1,7 @@
 @page "/attivita"
 @inject CalendarioService Svc
 @inject IJSRuntime JS
+@inject Sessione Sessione
 
 <PageTitle>Attività</PageTitle>
 
@@ -9,7 +10,13 @@
         <h1>Attività</h1>
         @if (bozza is null)
         {
-            <button class="btn btn-primario" @onclick="Nuova">+ Nuova attività</button>
+            <div class="azioni-titolo">
+                <label class="btn btn-secondario file-btn" title="Scegli più immagini: ognuna diventa un'attività con il nome del file">
+                    🖼️ Importa immagini
+                    <InputFile OnChange="Importa" accept="image/*" multiple disabled="@(importazione is not null)" />
+                </label>
+                <button class="btn btn-primario" @onclick="Nuova">+ Nuova attività</button>
+            </div>
         }
     </div>
 
@@ -65,11 +72,21 @@
                 </div>
 
                 <div class="azioni">
-                    <button type="submit" class="btn btn-primario" disabled="@caricamento">Salva</button>
+                    <button type="submit" class="btn btn-primario" disabled="@(caricamento || salvataggio)">@(salvataggio ? "Salvataggio…" : "Salva")</button>
                     <button type="button" class="btn btn-secondario" @onclick="Annulla">Annulla</button>
                 </div>
             </EditForm>
         </div>
+    }
+
+    @if (importazione is not null)
+    {
+        <div class="card importazione">⏳ @importazione</div>
+    }
+
+    @if (erroreElenco is not null)
+    {
+        <div class="avviso">⚠️ @erroreElenco</div>
     }
 
     @if (elenco is null)
@@ -99,6 +116,10 @@
             }
         </ul>
     }
+    <div class="azioni azioni-fondo">
+        <span class="nota">Collegato come @Sessione.Email</span>
+        <button class="btn btn-link" @onclick="Esci">Esci</button>
+    </div>
 </div>
 
 @code {
@@ -110,22 +131,32 @@
     private bool rimuovi;
     private bool caricamento;
     private string? errore;
+    private string? erroreElenco;
+    private bool salvataggio;
+    private string? importazione;
 
     private const int LatoMax = 800;
     private const long DimensioneMax = 15 * 1024 * 1024;
 
-    protected override async Task OnInitializedAsync() => elenco = await Svc.GetAttivitaAsync();
+    protected override async Task OnInitializedAsync() => await Ricarica();
+
+    private async Task Ricarica()
+    {
+        try
+        {
+            elenco = await Svc.GetAttivitaAsync();
+            erroreElenco = null;
+        }
+        catch (ErroreSupabase ex)
+        {
+            elenco ??= [];
+            erroreElenco = ex.Message;
+        }
+    }
 
     private void Nuova() => Apri(new Attivita());
 
-    private void Modifica(Attivita a) => Apri(new Attivita
-    {
-        Id = a.Id,
-        Nome = a.Nome,
-        Colore = a.Colore,
-        VersioneImmagine = a.VersioneImmagine,
-        HaImmagine = a.HaImmagine
-    });
+    private void Modifica(Attivita a) => Apri(a.Copia());
 
     private void Apri(Attivita a)
     {
@@ -154,19 +185,8 @@
         {
             // PNG/WebP mantengono la trasparenza, il resto diventa JPEG.
             // Il ridimensionamento avviene nel browser: anche le foto grandi del telefono vanno bene.
-            var formato = file.ContentType switch
-            {
-                "image/png" or "image/gif" or "image/svg+xml" => "image/png",
-                "image/webp" => "image/webp",
-                _ => "image/jpeg"
-            };
-            var ridotta = await file.RequestImageFileAsync(formato, LatoMax, LatoMax);
-            await using var stream = ridotta.OpenReadStream(DimensioneMax);
-            using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms);
-
-            nuovaImmagine = ms.ToArray();
-            nuovoContentType = formato;
+            (nuovaImmagine, nuovoContentType) = await RiduciAsync(file);
+            var formato = nuovoContentType;
             rimuovi = false;
             anteprima = $"data:{formato};base64,{Convert.ToBase64String(nuovaImmagine)}";
         }
@@ -180,6 +200,62 @@
         }
     }
 
+    /// <summary>Ridimensiona l'immagine nel browser (max 800 px) e la restituisce con il suo formato.</summary>
+    private static async Task<(byte[] Dati, string ContentType)> RiduciAsync(IBrowserFile file)
+    {
+        var formato = file.ContentType switch
+        {
+            "image/png" or "image/gif" or "image/svg+xml" => "image/png",
+            "image/webp" => "image/webp",
+            _ => "image/jpeg"
+        };
+        var ridotta = await file.RequestImageFileAsync(formato, LatoMax, LatoMax);
+        await using var stream = ridotta.OpenReadStream(DimensioneMax);
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms);
+        return (ms.ToArray(), formato);
+    }
+
+    private static readonly string[] Colori = ["#ff5a5f", "#ff9f1c", "#f7c600", "#2ec27e", "#3a86ff", "#8f5cff", "#ff5fa2"];
+
+    /// <summary>Crea un'attività per ogni immagine scelta, usando il nome del file come nome dell'attività.</summary>
+    private async Task Importa(InputFileChangeEventArgs e)
+    {
+        var files = e.GetMultipleFiles(60).Where(f => f.ContentType.StartsWith("image/")).ToList();
+        if (files.Count == 0) return;
+
+        erroreElenco = null;
+        var errori = new List<string>();
+        for (int i = 0; i < files.Count; i++)
+        {
+            var file = files[i];
+            var nome = NomeDaFile(file.Name);
+            importazione = $"Importo {i + 1} di {files.Count}: {nome}";
+            StateHasChanged();
+            try
+            {
+                var (dati, tipo) = await RiduciAsync(file);
+                await Svc.SalvaAttivitaAsync(new Attivita { Nome = nome, Colore = Colori[i % Colori.Length] }, dati, tipo, false);
+            }
+            catch (Exception ex) when (ex is ErroreSupabase or IOException or InvalidOperationException or JSException)
+            {
+                errori.Add($"{nome}: {ex.Message}");
+            }
+        }
+        importazione = null;
+        await Ricarica();
+        if (errori.Count > 0) erroreElenco = "Alcune immagini non sono state importate. " + string.Join(" · ", errori);
+    }
+
+    /// <summary>"03 - Parco_giochi.jpg" diventa "Parco giochi".</summary>
+    private static string NomeDaFile(string nomeFile)
+    {
+        var nome = Path.GetFileNameWithoutExtension(nomeFile).Replace('_', ' ').Trim();
+        nome = System.Text.RegularExpressions.Regex.Replace(nome, @"^\d+\s*[-.)]?\s*", "");
+        if (nome.Length == 0) nome = "Attività";
+        return nome.Length > 80 ? nome[..80] : nome;
+    }
+
     private void RimuoviImmagine()
     {
         anteprima = null;
@@ -190,10 +266,23 @@
 
     private async Task Salva()
     {
-        if (bozza is null) return;
-        await Svc.SalvaAttivitaAsync(bozza, nuovaImmagine, nuovoContentType, rimuovi);
-        bozza = null;
-        elenco = await Svc.GetAttivitaAsync();
+        if (bozza is null || salvataggio) return;
+        salvataggio = true;
+        errore = null;
+        try
+        {
+            await Svc.SalvaAttivitaAsync(bozza, nuovaImmagine, nuovoContentType, rimuovi);
+            bozza = null;
+            await Ricarica();
+        }
+        catch (ErroreSupabase ex)
+        {
+            errore = ex.Message;
+        }
+        finally
+        {
+            salvataggio = false;
+        }
     }
 
     private async Task Elimina(Attivita a)
@@ -201,8 +290,21 @@
         var ok = await JS.InvokeAsync<bool>("confirm",
             $"Eliminare l'attività \"{a.Nome}\"? Verrà tolta anche dal calendario.");
         if (!ok) return;
-        await Svc.EliminaAttivitaAsync(a.Id);
-        if (bozza?.Id == a.Id) bozza = null;
-        elenco = await Svc.GetAttivitaAsync();
+        try
+        {
+            await Svc.EliminaAttivitaAsync(a);
+            if (bozza?.Id == a.Id) bozza = null;
+        }
+        catch (ErroreSupabase ex)
+        {
+            erroreElenco = ex.Message;
+        }
+        await Ricarica();
+    }
+
+    private async Task Esci()
+    {
+        if (await JS.InvokeAsync<bool>("confirm", "Uscire da questo dispositivo? Per rientrare serviranno email e password."))
+            await Sessione.EsciAsync();
     }
 }

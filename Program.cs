@@ -1,56 +1,26 @@
 using System.Globalization;
-using CalendarioSettimanale.Components;
+using CalendarioSettimanale;
 using CalendarioSettimanale.Data;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Components.Web;
+using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
 var cultura = new CultureInfo("it-IT");
 CultureInfo.DefaultThreadCurrentCulture = cultura;
 CultureInfo.DefaultThreadCurrentUICulture = cultura;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebAssemblyHostBuilder.CreateDefault(args);
+builder.RootComponents.Add<App>("#app");
+builder.RootComponents.Add<HeadOutlet>("head::after");
 
-var cartellaDati = Path.Combine(builder.Environment.ContentRootPath, "App_Data");
-Directory.CreateDirectory(cartellaDati);
-var connectionString = builder.Configuration.GetConnectionString("Calendario")
-    ?? $"Data Source={Path.Combine(cartellaDati, "calendario.db")}";
+// Indirizzo e chiave pubblica ("publishable" / "anon") del progetto Supabase: vedi wwwroot/appsettings.json
+var config = new SupabaseConfig(
+    (builder.Configuration["Supabase:Url"] ?? "").Trim().TrimEnd('/'),
+    (builder.Configuration["Supabase:Chiave"] ?? "").Trim());
 
-builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlite(connectionString));
+builder.Services.AddSingleton(config);
+builder.Services.AddSingleton(new HttpClient());
+builder.Services.AddSingleton<Sessione>();
+builder.Services.AddSingleton<SupabaseClient>();
 builder.Services.AddSingleton<CalendarioService>();
 
-builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
-
-var app = builder.Build();
-
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext();
-    db.Database.EnsureCreated();
-}
-
-if (!app.Environment.IsDevelopment())
-{
-    app.UseExceptionHandler("/Error", createScopeForErrors: true);
-    app.UseHsts();
-}
-app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-app.UseHttpsRedirection();
-
-app.UseAntiforgery();
-
-app.MapStaticAssets();
-
-// Immagini delle attività (salvate nel database)
-app.MapGet("/immagini/{id:int}", async (int id, CalendarioService svc, HttpContext ctx) =>
-{
-    var img = await svc.GetImmagineAsync(id);
-    if (img is null) return Results.NotFound();
-    // L'URL contiene la versione (?v=), quindi si può mettere in cache a lungo
-    ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-    return Results.File(img.Value.Dati, img.Value.ContentType);
-});
-
-app.MapRazorComponents<App>()
-    .AddInteractiveServerRenderMode();
-
-app.Run();
+await builder.Build().RunAsync();

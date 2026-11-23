@@ -16,6 +16,11 @@
         }
     </div>
 
+    @if (errore is not null)
+    {
+        <div class="avviso">⚠️ @errore</div>
+    }
+
     <div class="cal-griglia">
         <div class="cal-colonna cal-etichette" aria-hidden="true">
             <div class="cal-testa"></div>
@@ -80,18 +85,19 @@
 
 @code {
     private DateOnly inizio = CalendarioService.InizioSettimana(CalendarioService.Oggi);
-    private Dictionary<(DateOnly, Periodo), int> mappa = [];
-    private Dictionary<int, Attivita> attivita = [];
+    private Dictionary<(DateOnly, Periodo), long> mappa = [];
+    private Dictionary<long, Attivita> attivita = [];
     private DateOnly attualeGiorno;
     private Periodo attualePeriodo;
+    private string? errore;
     private Timer? timer;
 
     protected override async Task OnInitializedAsync()
     {
         AggiornaAdesso();
         await Carica();
-        Svc.DatiCambiati += SuDatiCambiati;
-        // Ogni minuto aggiorna il periodo evidenziato (utile se resta acceso su uno schermo)
+        // Ogni minuto aggiorna il periodo evidenziato e ricarica i dati,
+        // così le modifiche fatte dal telefono compaiono anche sulla TV
         timer = new Timer(_ => InvokeAsync(SuTimer), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
     }
 
@@ -105,20 +111,28 @@
 
     private async Task Carica()
     {
-        attivita = (await Svc.GetAttivitaAsync()).ToDictionary(a => a.Id);
-        mappa = await Svc.GetSettimanaAsync(inizio);
+        try
+        {
+            attivita = (await Svc.GetAttivitaAsync()).ToDictionary(a => a.Id);
+            mappa = await Svc.GetSettimanaAsync(inizio);
+            errore = null;
+        }
+        catch (ErroreSupabase ex)
+        {
+            errore = ex.Message;
+        }
     }
 
     private async Task CambiaSettimana(int giorni)
     {
         inizio = inizio.AddDays(giorni);
-        mappa = await Svc.GetSettimanaAsync(inizio);
+        await Carica();
     }
 
     private async Task TornaAOggi()
     {
         inizio = CalendarioService.InizioSettimana(CalendarioService.Oggi);
-        mappa = await Svc.GetSettimanaAsync(inizio);
+        await Carica();
     }
 
     private async Task SuTimer()
@@ -127,23 +141,10 @@
         AggiornaAdesso();
         // Se si stava guardando la settimana corrente e questa è cambiata, si passa alla nuova
         var settimanaOra = CalendarioService.InizioSettimana(CalendarioService.Oggi);
-        if (inizio == settimanaPrima && settimanaOra != inizio)
-        {
-            inizio = settimanaOra;
-            mappa = await Svc.GetSettimanaAsync(inizio);
-        }
-        StateHasChanged();
-    }
-
-    private void SuDatiCambiati() => _ = InvokeAsync(async () =>
-    {
+        if (inizio == settimanaPrima && settimanaOra != inizio) inizio = settimanaOra;
         await Carica();
         StateHasChanged();
-    });
-
-    public void Dispose()
-    {
-        Svc.DatiCambiati -= SuDatiCambiati;
-        timer?.Dispose();
     }
+
+    public void Dispose() => timer?.Dispose();
 }
