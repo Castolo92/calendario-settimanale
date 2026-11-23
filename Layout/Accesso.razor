@@ -1,28 +1,58 @@
 @inject Sessione Sessione
+@inject IJSRuntime JS
+@inject NavigationManager Nav
 
 <div class="accesso">
     <div class="card">
-        <div class="accesso-icona">🔑</div>
-        <h1>Ciao!</h1>
-        <p class="nota">Accedi una volta su questo dispositivo: resterai collegato.</p>
+        <div class="accesso-icona">@(recupero ? "📧" : "🔑")</div>
+        <h1>@(recupero ? "Nuova password" : "Ciao!")</h1>
 
-        <form @onsubmit="Accedi" class="accesso-form">
-            <label class="campo">
-                <span>Email</span>
-                <input class="input" type="email" autocomplete="username" @bind="email" required />
-            </label>
-            <label class="campo">
-                <span>Password</span>
-                <input class="input" type="password" autocomplete="current-password" @bind="password" required />
-            </label>
-            @if (errore is not null)
-            {
-                <div class="errore">@errore</div>
-            }
-            <button type="submit" class="btn btn-primario" disabled="@inCorso">
-                @(inCorso ? "Accesso…" : "Entra")
+        @if (Sessione.ErroreLink is not null)
+        {
+            <div class="avviso">⚠️ @Sessione.ErroreLink</div>
+        }
+
+        @if (inviata)
+        {
+            <p>Ti ho mandato un'email a <b>@email</b>. Apri il link che contiene da questo dispositivo: potrai scegliere la nuova password.</p>
+            <p class="nota">Non arriva? Controlla anche nella posta indesiderata.</p>
+            <button class="btn btn-secondario" @onclick="TornaAllAccesso">Torna all'accesso</button>
+        }
+        else
+        {
+            <p class="nota">
+                @(recupero
+                    ? "Scrivi la tua email: riceverai un link per scegliere la password."
+                    : "Accedi una volta su questo dispositivo: resterai collegato.")
+            </p>
+
+            <form @onsubmit="Invia" class="accesso-form">
+                <label class="campo">
+                    <span>Email</span>
+                    <input id="accesso-email" class="input" type="email" autocomplete="username"
+                           @bind="email" @bind:event="oninput" required />
+                </label>
+                @if (!recupero)
+                {
+                    <label class="campo">
+                        <span>Password</span>
+                        <input id="accesso-password" class="input" type="password" autocomplete="current-password"
+                               @bind="password" @bind:event="oninput" required />
+                    </label>
+                }
+                @if (errore is not null)
+                {
+                    <div class="errore">@errore</div>
+                }
+                <button type="submit" class="btn btn-primario" disabled="@inCorso">
+                    @(inCorso ? "Un attimo…" : recupero ? "Mandami il link" : "Entra")
+                </button>
+            </form>
+
+            <button class="btn btn-link" @onclick="CambiaModo">
+                @(recupero ? "← Torna all'accesso" : "Password dimenticata o mai impostata?")
             </button>
-        </form>
+        }
     </div>
 </div>
 
@@ -31,14 +61,42 @@
     private string password = "";
     private string? errore;
     private bool inCorso;
+    private bool recupero;
+    private bool inviata;
 
-    private async Task Accedi()
+    private void CambiaModo()
+    {
+        recupero = !recupero;
+        errore = null;
+        Sessione.ChiudiErroreLink();
+    }
+
+    private void TornaAllAccesso()
+    {
+        recupero = false;
+        inviata = false;
+    }
+
+    private async Task Invia()
     {
         errore = null;
         inCorso = true;
         try
         {
-            errore = await Sessione.AccediAsync(email, password);
+            // I browser che compilano da soli i campi a volte non avvisano l'app:
+            // leggiamo i valori direttamente dalla pagina
+            email = await JS.InvokeAsync<string>("calendario.valore", "accesso-email");
+            if (!recupero) password = await JS.InvokeAsync<string>("calendario.valore", "accesso-password");
+
+            if (recupero)
+            {
+                errore = await Sessione.RecuperaPasswordAsync(email, Nav.BaseUri);
+                inviata = errore is null;
+            }
+            else
+            {
+                errore = await Sessione.AccediAsync(email, password);
+            }
         }
         catch (HttpRequestException)
         {

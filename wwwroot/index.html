@@ -30,6 +30,15 @@
         <a href="." class="reload">Ricarica</a>
         <span class="dismiss">🗙</span>
     </div>
+    <script>
+        // Piccoli aiuti usati dall'app (Data/Sessione.cs e Layout/Accesso.razor)
+        window.calendario = {
+            leggiHash: () => location.hash,
+            pulisciHash: () => history.replaceState(null, "", location.pathname + location.search),
+            // Legge il valore reale del campo: copre anche la compilazione automatica del browser
+            valore: id => document.getElementById(id)?.value ?? ""
+        };
+    </script>
     <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
 </body>
 

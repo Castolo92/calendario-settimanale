@@ -27,6 +27,12 @@ public class Sessione(SupabaseConfig config, HttpClient http, IJSRuntime js)
     public bool Collegato => dati is not null;
     public string? Email => dati?.Email;
 
+    /// <summary>Vero dopo un link di invito o di recupero: l'utente deve scegliere una password.</summary>
+    public bool DeveImpostarePassword { get; private set; }
+
+    /// <summary>Messaggio da mostrare se il link ricevuto via email non era valido.</summary>
+    public string? ErroreLink { get; private set; }
+
     public async Task InizializzaAsync()
     {
         if (inizializzata) return;
@@ -41,7 +47,102 @@ public class Sessione(SupabaseConfig config, HttpClient http, IJSRuntime js)
         {
             dati = null; // storage non disponibile o dati rovinati: si rifà l'accesso
         }
+
+        await GestisciLinkEmailAsync();
     }
+
+    /// <summary>
+    /// I link nelle email di Supabase (invito, recupero password, magic link) riportano al sito con
+    /// i token nella parte dopo "#". Qui li leggiamo, colleghiamo l'utente e puliamo l'indirizzo.
+    /// </summary>
+    private async Task GestisciLinkEmailAsync()
+    {
+        string hash;
+        try
+        {
+            hash = await js.InvokeAsync<string>("calendario.leggiHash");
+        }
+        catch
+        {
+            return;
+        }
+        if (string.IsNullOrEmpty(hash) || !(hash.Contains("access_token=") || hash.Contains("error=")))
+            return;
+
+        var parametri = hash.TrimStart('#').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Split('=', 2))
+            .ToDictionary(p => p[0], p => p.Length > 1 ? Uri.UnescapeDataString(p[1].Replace('+', ' ')) : "");
+        try { await js.InvokeVoidAsync("calendario.pulisciHash"); } catch { }
+
+        if (parametri.ContainsKey("error"))
+        {
+            ErroreLink = parametri.GetValueOrDefault("error_code") == "otp_expired"
+                ? "Il link dell'email è scaduto o è già stato usato. Chiedine uno nuovo con \"Password dimenticata?\"."
+                : "Il link dell'email non è valido: " + parametri.GetValueOrDefault("error_description", "");
+            return;
+        }
+
+        var token = new RispostaToken
+        {
+            AccessToken = parametri.GetValueOrDefault("access_token"),
+            RefreshToken = parametri.GetValueOrDefault("refresh_token"),
+            ExpiresAt = long.TryParse(parametri.GetValueOrDefault("expires_at"), out var at) ? at : null,
+            ExpiresIn = long.TryParse(parametri.GetValueOrDefault("expires_in"), out var inn) ? inn : null,
+        };
+        if (token.AccessToken is null) return;
+
+        // L'email non è nel link: la chiediamo a Supabase
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{config.Url}/auth/v1/user");
+            req.Headers.Add("apikey", config.Chiave);
+            req.Headers.Authorization = new("Bearer", token.AccessToken);
+            using var r = await http.SendAsync(req);
+            if (r.IsSuccessStatusCode) token.User = await r.Content.ReadFromJsonAsync<Utente>();
+        }
+        catch { /* l'email serve solo per mostrarla */ }
+
+        var tipo = parametri.GetValueOrDefault("type");
+        DeveImpostarePassword = tipo is "recovery" or "invite" or "signup";
+        await SalvaAsync(token);
+    }
+
+    /// <summary>Imposta la password dell'utente collegato. Restituisce null se riuscito, altrimenti l'errore.</summary>
+    public async Task<string?> ImpostaPasswordAsync(string password)
+    {
+        var token = await GetTokenAsync();
+        if (token is null) return "Il collegamento è scaduto: chiedi un nuovo link con \"Password dimenticata?\".";
+
+        using var req = new HttpRequestMessage(HttpMethod.Put, $"{config.Url}/auth/v1/user")
+        {
+            Content = JsonContent.Create(new { password })
+        };
+        req.Headers.Add("apikey", config.Chiave);
+        req.Headers.Authorization = new("Bearer", token);
+        using var risposta = await http.SendAsync(req);
+        if (!risposta.IsSuccessStatusCode)
+        {
+            var dettaglio = await risposta.Content.ReadAsStringAsync();
+            if (dettaglio.Contains("weak_password")) return "Password troppo debole: usa almeno 6 caratteri, meglio se con lettere e numeri.";
+            if (dettaglio.Contains("same_password")) return "È uguale alla password attuale: scegline una diversa.";
+            return $"Non sono riuscito a salvare la password ({(int)risposta.StatusCode}).";
+        }
+        DeveImpostarePassword = false;
+        Cambiata?.Invoke();
+        return null;
+    }
+
+    /// <summary>Invia l'email per scegliere una nuova password; il link riporta a <paramref name="indirizzoSito"/>.</summary>
+    public async Task<string?> RecuperaPasswordAsync(string email, string indirizzoSito)
+    {
+        using var risposta = await PostAuthAsync($"recover?redirect_to={Uri.EscapeDataString(indirizzoSito)}", new { email = email.Trim() });
+        if (risposta.IsSuccessStatusCode) return null;
+        return (int)risposta.StatusCode == 429
+            ? "Hai già chiesto un'email da poco: aspetta un minuto e riprova."
+            : $"Invio non riuscito ({(int)risposta.StatusCode}).";
+    }
+
+    public void ChiudiErroreLink() => ErroreLink = null;
 
     /// <summary>Restituisce null se l'accesso è riuscito, altrimenti il messaggio di errore.</summary>
     public async Task<string?> AccediAsync(string email, string password)
@@ -63,6 +164,7 @@ public class Sessione(SupabaseConfig config, HttpClient http, IJSRuntime js)
     public async Task EsciAsync()
     {
         var token = dati?.AccessToken;
+        DeveImpostarePassword = false;
         await SalvaAsync(null);
         if (token is null) return;
         try
