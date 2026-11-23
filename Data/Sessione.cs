@@ -49,6 +49,9 @@ public class Sessione(SupabaseConfig config, HttpClient http, IJSRuntime js)
         var risposta = await PostAuthAsync("token?grant_type=password", new { email = email.Trim(), password });
         if (!risposta.IsSuccessStatusCode)
         {
+            var dettaglio = await risposta.Content.ReadAsStringAsync();
+            if (dettaglio.Contains("email_not_confirmed"))
+                return "Questa email non è ancora confermata: confermala dalla dashboard di Supabase (Authentication → Users).";
             return (int)risposta.StatusCode is 400 or 401
                 ? "Email o password non corretti."
                 : $"Accesso non riuscito ({(int)risposta.StatusCode}).";
