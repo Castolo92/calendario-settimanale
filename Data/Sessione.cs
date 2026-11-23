@@ -138,7 +138,7 @@ public class Sessione(SupabaseConfig config, HttpClient http, IJSRuntime js)
         using var risposta = await PostAuthAsync($"recover?redirect_to={Uri.EscapeDataString(indirizzoSito)}", new { email = email.Trim() });
         if (risposta.IsSuccessStatusCode) return null;
         return (int)risposta.StatusCode == 429
-            ? "Hai già chiesto un'email da poco: aspetta un minuto e riprova."
+            ? "Limite di email raggiunto: Supabase ne invia al massimo 2 all'ora. Riprova più tardi, oppure chiedi a chi gestisce l'app di impostarti la password dalla dashboard di Supabase."
             : $"Invio non riuscito ({(int)risposta.StatusCode}).";
     }
 
